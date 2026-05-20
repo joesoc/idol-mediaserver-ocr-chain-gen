@@ -1,0 +1,136 @@
+# ============================================================
+#  gen_chain.py — YAML Definition Template
+#  Copy this file, rename it, fill in your values.
+# ============================================================
+
+# ---------------------------------------------------------------------------
+# identifier
+#   The ObjectRecognition model identifier — must exactly match the string
+#   returned by the Documents database (case-sensitive).
+#   Convention: STATE_DOCTYPE  e.g. WA_DL, SA_PASSPORT, VIC_DL
+# ---------------------------------------------------------------------------
+identifier: WA_DL
+
+# Human-readable name (used only in Lua comments and log messages)
+description: "Western Australia Driver's Licence"
+
+
+# ---------------------------------------------------------------------------
+# card_estimation
+#   Describes how the ObjectRecognition bounding box relates to the full card.
+#
+#   Two common cases:
+#
+#   A) Model detects the FULL card (e.g. QLD_DL):
+#      Set all factors to their identity values — the bounding box IS the card.
+#        width_factor:       1.0
+#        height_factor:      1.0
+#        left_offset_factor: 0.0
+#        top_offset_factor:  0.0
+#
+#   B) Model detects only a BANNER STRIP across the top of the card
+#      (e.g. TAS_DL, VIC_DL, WA_DL — "large aspect ratio" warning in engine.log):
+#      The banner is ~N% of the card height; set height_factor = 1/N.
+#      If the banner spans the full card width, width_factor = 1.0.
+#      If the banner is narrower, increase width_factor accordingly.
+#
+#   Formula used in the generated Lua:
+#     card_left   = min_x + lw * left_offset_factor
+#     card_top    = min_y + lh * top_offset_factor
+#     card_width  = lw   * width_factor
+#     card_height = lh   * height_factor
+#
+#   How to measure banner height fraction:
+#     Open the source card image in an image editor.
+#     Banner height in pixels / total card height in pixels = fraction.
+#     height_factor = 1.0 / fraction
+# ---------------------------------------------------------------------------
+card_estimation:
+  left_offset_factor: 0.0    # shift left edge by lw * this  (negative = expand left)
+  top_offset_factor:  0.0    # shift top  edge by lh * this
+  width_factor:       1.0    # card width  = detected width  * this
+  height_factor:      6.25   # card height = detected height * this  (banner ≈ 16% of card)
+
+
+# ---------------------------------------------------------------------------
+# fields
+#   One entry per OCR target region.  Each field produces:
+#     - compute_dynamic_region_<id_lower>_<name_lower>.lua
+#     - DynamicRegion, Draw, Save, OCR engine entries in the cfg files
+#     - An InputN line in CombineOCRResults
+#
+#   name
+#     Used verbatim in engine names and the Lua label string.
+#     Use CamelCase with underscores: Licence_Number, Date_Of_Birth, Expiry_Date
+#
+#   roi  (all values are fractions 0.0–1.0 of the full card dimensions)
+#     left   — horizontal start as fraction of card_width  from card_left
+#     top    — vertical   start as fraction of card_height from card_top
+#     width  — region width  as fraction of card_width
+#     height — region height as fraction of card_height
+#
+#     TIP: Open the reference image, measure pixel positions, divide by total
+#     card dimensions to get the fractions.  Use --dry-run first, then refine
+#     after seeing the debug pre_ocr PNG.
+#
+#   ocr settings
+#     languages             en | en,fr | etc.
+#     character_types       digit | uppercase | lowercase | uppercase,digit
+#                           Omit this key to allow all character types.
+#     word_reject_threshold 0–100. Lower = keep more (less confident) words.
+#                           60 is a good default for clean document text.
+#     ocr_mode              document (best for printed text)
+#                           auto     (mixed printed + handwritten)
+#     process_text_elements true | false  (set true for handwritten/mixed)
+# ---------------------------------------------------------------------------
+fields:
+  - name: Licence_Number
+    description: "7-digit licence number (top-right corner)"
+    roi:
+      left:   0.67
+      top:    0.22
+      width:  0.31
+      height: 0.10
+    ocr:
+      languages: en
+      character_types: digit
+      word_reject_threshold: 60
+      ocr_mode: document
+
+  # Add more fields as needed, e.g.:
+  # - name: Date_Of_Birth
+  #   description: "DOB in DD Mon YYYY format"
+  #   roi:
+  #     left:   0.38
+  #     top:    0.56
+  #     width:  0.28
+  #     height: 0.10
+  #   ocr:
+  #     languages: en
+  #     word_reject_threshold: 40
+  #     ocr_mode: document
+
+
+# ---------------------------------------------------------------------------
+# draw
+#   Colours for the debug PNG overlay (draw/draw_<id_lower>.lua).
+#   Each colour is [R, G, B] in 0–255 range.
+#
+#   roi_color      — thick border drawn around the OCR region rectangle
+#   boundary_color — thin polygon drawn around the ObjectRecognition boundary
+#   label_fallback — text shown if no label is set in the rectangle record
+#
+#   Suggested palette (avoid colours already used by other states):
+#     ACT  orange   [255, 140,   0]
+#     NSW  yellow   [220, 200,   0]
+#     QLD  green    [  0, 200,  80]
+#     TAS  cyan     [  0, 200, 220]
+#     VIC  purple   [160,   0, 220]
+#     WA   amber    [220, 120,   0]  ← this file
+#     SA   red      [220,  40,  40]
+#     NT   teal     [  0, 180, 160]
+# ---------------------------------------------------------------------------
+draw:
+  roi_color:      [220, 120,   0]   # amber
+  boundary_color: [  0, 100, 200]   # blue
+  label_fallback: WOR

@@ -1,0 +1,60 @@
+# ============================================================
+#  gen_chain.py — YAML Definition — TEMPLATE (all options shown)
+#  Copy to definitions/<your_name>.yaml and fill in values.
+# ============================================================
+
+# Required — ObjectRecognition model identifier (exact, case-sensitive)
+identifier: MY_DOC_TYPE
+
+description: "Human-readable name for log messages and Lua comments"
+
+# ---------------------------------------------------------------------------
+# card_estimation  (required)
+# ---------------------------------------------------------------------------
+card_estimation:
+  # If the model detects only a banner at the top of the card:
+  left_offset_factor: 0.0   # negative shifts left edge outward
+  top_offset_factor:  0.0
+  width_factor:       1.0
+  height_factor:      1.0   # e.g. 7.8 if banner is ~13% of card height
+
+# ---------------------------------------------------------------------------
+# fields  (required, at least one entry)
+# ---------------------------------------------------------------------------
+fields:
+  - name: Field_One                    # CamelCase_With_Underscores
+    description: "What this field is"
+    roi:
+      left:   0.0    # 0.0 = card left edge,  1.0 = card right edge
+      top:    0.0    # 0.0 = card top edge,   1.0 = card bottom edge
+      width:  0.5    # fraction of full card width
+      height: 0.1    # fraction of full card height
+    ocr:
+      languages: en
+      # character_types: digit          # omit to allow all character types
+      # character_types: uppercase
+      # character_types: uppercase,digit
+      word_reject_threshold: 60         # 0 = keep everything, 100 = very strict
+      ocr_mode: document                # document | auto
+      # process_text_elements: true     # uncomment for handwritten/mixed text
+
+  - name: Field_Two
+    description: "Second field on the same document"
+    roi:
+      left:   0.5
+      top:    0.3
+      width:  0.45
+      height: 0.10
+    ocr:
+      languages: en
+      word_reject_threshold: 40
+      ocr_mode: auto
+      process_text_elements: true
+
+# ---------------------------------------------------------------------------
+# draw  (optional — defaults shown)
+# ---------------------------------------------------------------------------
+draw:
+  roi_color:      [255, 165,   0]   # RGB colour for the OCR region rectangle
+  boundary_color: [  0,   0, 160]   # RGB colour for the ObjectRecognition polygon
+  label_fallback: "ROI"             # fallback label text if rect.label is empty
