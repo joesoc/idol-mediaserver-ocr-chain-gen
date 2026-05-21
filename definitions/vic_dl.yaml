@@ -24,7 +24,7 @@ card_estimation:
   height_factor:       7.8    # card_height = lh * 7.8  (banner ≈ 12.8% of card height)
 
 fields:
-  - name: DL_Number
+  - name: Number
     description: "VIC licence number (right-centre of card)"
     lua_script: compute_dynamic_region_vic.lua
     roi:

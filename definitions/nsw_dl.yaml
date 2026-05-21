@@ -28,7 +28,7 @@ card_estimation:
   height_factor:       4.3    # card_height = lh * 4.3  (banner ≈ 23% of card)
 
 fields:
-  - name: DL_Number
+  - name: Number
     description: "NSW licence number (bottom-left of card)"
     # Override: use hand-written two-pass Lua instead of auto-generated template.
     lua_script: compute_dynamic_region_nsw.lua

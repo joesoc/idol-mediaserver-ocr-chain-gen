@@ -23,7 +23,7 @@ card_estimation:
   height_factor:      10.35   # card_height = lh * 10.35 (stripe ≈ 9.6% of card height)
 
 fields:
-  - name: DL_Number
+  - name: Number
     description: "TAS licence number (mid-right of card)"
     lua_script: compute_dynamic_region_tas.lua
     roi:

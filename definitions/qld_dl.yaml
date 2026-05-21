@@ -37,7 +37,7 @@ card_estimation:
   height_factor:       1.0
 
 fields:
-  - name: DL_Number
+  - name: Number
     description: "QLD licence number (top-right of card)"
     # Override: use hand-written two-branch geometry Lua.
     lua_script: compute_dynamic_region_qld.lua

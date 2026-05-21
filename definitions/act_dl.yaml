@@ -28,7 +28,7 @@ card_estimation:
   height_factor:       6.8    # card_height = lh * 6.8  (banner ≈ 14.7% of card)
 
 fields:
-  - name: DL_Number
+  - name: Number
     description: "7-digit ACT licence number (mid-left of card)"
     # Override: use hand-written Lua instead of auto-generated template.
     lua_script: compute_dynamic_region_act.lua

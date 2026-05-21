@@ -89,8 +89,8 @@ fields:
     roi:
       left:   0.67
       top:    0.22
-      width:  0.31
-      height: 0.10
+      width:  0.34
+      height: 0.15
     ocr:
       languages: en
       character_types: digit

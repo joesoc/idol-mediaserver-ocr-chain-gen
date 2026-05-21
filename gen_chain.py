@@ -6,12 +6,15 @@ Reads a YAML document-type definition and:
   1. Generates Lua scripts (filter, per-field compute_dynamic_region, draw overlay)
   2. Patches Kapish_debug.cfg  (Filter → Combine → DynRegion → Draw → Save → OCR)
   3. Patches Kapish.cfg        (Filter → Combine → DynRegion → OCR; no Draw/Save)
+  4. Patches transformed_combined.xsl  (adds <xsl:if> block for the new identifier)
+  5. Patches unit test                 (adds field entries to _DOC_FIELDS)
 
 Usage:
-  python3 tools/gen_chain.py tools/definitions/wa_dl.yaml
-  python3 tools/gen_chain.py tools/definitions/wa_dl.yaml --dry-run
-  python3 tools/gen_chain.py tools/definitions/wa_dl.yaml --force
+  python3 tools/gen_chain.py definitions/wa_dl.yaml
+  python3 tools/gen_chain.py definitions/wa_dl.yaml --dry-run
+  python3 tools/gen_chain.py definitions/wa_dl.yaml --force
   python3 tools/gen_chain.py --list
+  python3 tools/gen_chain.py --audit
 """
 
 import argparse
@@ -295,6 +298,17 @@ def lua_draw(identifier: str, draw_cfg: dict) -> str:
 # ===========================================================================
 #  CFG helpers
 # ===========================================================================
+
+def get_combine_inputs(text: str) -> set:
+    """Return the set of result-track values wired into [CombineOCRResults]."""
+    combine_pos = text.find("\n[CombineOCRResults]")
+    if combine_pos == -1:
+        return set()
+    luascript_pos = text.find("LuaScript", combine_pos)
+    end = luascript_pos if luascript_pos != -1 else len(text)
+    block = text[combine_pos:end]
+    return set(re.findall(r"Input\d+\s*=\s*(\S+)", block))
+
 
 def get_session_engines(text: str) -> list:
     """Return the ordered list of engine names from the [Session] block."""
@@ -706,6 +720,156 @@ def cmd_list(config_dir: Path):
     print()
 
 
+def cmd_audit(config_dir: Path, defs_dir: Path):
+    """
+    Cross-check every YAML definition against the deployed configuration.
+
+    For each definition the following artifacts are verified:
+      Lua    filter · compute (per field) · draw
+      CFG    Kapish.cfg       — session engines + [CombineOCRResults] wiring
+      CFG    Kapish_debug.cfg — session engines + [CombineOCRResults] wiring
+      XSL    transformed_combined.xsl — <xsl:if> block present
+      Test   unittestforOCRProdV2.py  — _DOC_FIELDS entry present
+    """
+    TICK  = "\u2713"
+    CROSS = "\u2717"
+    SEP   = "=" * 72
+
+    def_files = sorted(p for p in defs_dir.glob("*.yaml") if p.name != "template.yaml")
+    if not def_files:
+        sys.exit(f"No definition files found in {defs_dir}")
+
+    lua_dir        = config_dir / "lua"
+    plain_cfg_path = config_dir / "Kapish.cfg"
+    debug_cfg_path = config_dir / "Kapish_debug.cfg"
+    xsl_path       = config_dir / "xsl" / "transformed_combined.xsl"
+
+    plain_cfg  = plain_cfg_path.read_text(encoding="utf-8")  if plain_cfg_path.exists()  else ""
+    debug_cfg  = debug_cfg_path.read_text(encoding="utf-8")  if debug_cfg_path.exists()  else ""
+    xsl_text   = xsl_path.read_text(encoding="utf-8")        if xsl_path.exists()        else ""
+    test_text  = UNITTEST_PATH.read_text(encoding="utf-8")   if UNITTEST_PATH.exists()   else ""
+
+    plain_session  = set(get_session_engines(plain_cfg))
+    debug_session  = set(get_session_engines(debug_cfg))
+    plain_combine  = get_combine_inputs(plain_cfg)
+    debug_combine  = get_combine_inputs(debug_cfg)
+
+    total_checks = 0
+    total_fails  = 0
+
+    print(f"\nAudit  —  {len(def_files)} definitions in {defs_dir.name}/")
+    print(SEP)
+
+    for def_file in def_files:
+        defn       = yaml.safe_load(def_file.read_text(encoding="utf-8"))
+        identifier = defn.get("identifier", "?")
+        id_low     = identifier.lower()
+        fields     = defn.get("fields", [])
+
+        issues = []
+
+        def chk(ok: bool, msg: str) -> bool:
+            nonlocal total_checks, total_fails
+            total_checks += 1
+            if not ok:
+                total_fails += 1
+                issues.append(msg)
+            return ok
+
+        # --- Lua scripts ---
+        chk(
+            (lua_dir / "filters" / f"filter_{id_low}.lua").exists(),
+            f"Lua: filter_{id_low}.lua missing",
+        )
+        chk(
+            (lua_dir / "draw" / f"draw_{id_low}.lua").exists(),
+            f"Lua: draw_{id_low}.lua missing",
+        )
+        for f in fields:
+            lua_name = f.get("lua_script",
+                             f"compute_dynamic_region_{id_low}_{f['name'].lower()}.lua")
+            override_note = "  [override]" if "lua_script" in f else ""
+            chk(
+                (lua_dir / lua_name).exists(),
+                f"Lua: {lua_name} missing{override_note}",
+            )
+
+        # --- Kapish.cfg ---
+        chk(
+            f"Filter_{identifier}" in plain_session,
+            f"Kapish.cfg [Session]: Filter_{identifier} missing",
+        )
+        for f in fields:
+            fname  = f["name"]
+            result = f"OCR_{identifier}_{fname}.Result"
+            chk(
+                f"DynamicRegion_{identifier}_{fname}" in plain_session,
+                f"Kapish.cfg [Session]: DynamicRegion_{identifier}_{fname} missing",
+            )
+            chk(
+                f"OCR_{identifier}_{fname}" in plain_session,
+                f"Kapish.cfg [Session]: OCR_{identifier}_{fname} missing",
+            )
+            chk(
+                result in plain_combine,
+                f"Kapish.cfg [CombineOCRResults]: {result} missing",
+            )
+
+        # --- Kapish_debug.cfg ---
+        chk(
+            f"Filter_{identifier}" in debug_session,
+            f"Kapish_debug.cfg [Session]: Filter_{identifier} missing",
+        )
+        for f in fields:
+            fname  = f["name"]
+            result = f"OCR_{identifier}_{fname}.Result"
+            chk(
+                f"DynamicRegion_{identifier}_{fname}" in debug_session,
+                f"Kapish_debug.cfg [Session]: DynamicRegion_{identifier}_{fname} missing",
+            )
+            chk(
+                f"OCR_{identifier}_{fname}" in debug_session,
+                f"Kapish_debug.cfg [Session]: OCR_{identifier}_{fname} missing",
+            )
+            chk(
+                result in debug_combine,
+                f"Kapish_debug.cfg [CombineOCRResults]: {result} missing",
+            )
+
+        # --- XSL ---
+        chk(
+            f"'{identifier}'" in xsl_text,
+            f"XSL: identifier '{identifier}' not found in transformed_combined.xsl",
+        )
+
+        # --- Unit test ---
+        for f in fields:
+            xml_num = f"{identifier}_{f['name'].upper()}"
+            chk(
+                f"'{xml_num}'" in test_text,
+                f"Unit test: '{xml_num}' not found in _DOC_FIELDS",
+            )
+
+        # --- Print result ---
+        n_fail  = len(issues)
+        n_total = total_checks  # running total includes this definition's checks
+        # compute this definition's count
+        n_def   = 2 + len(fields) + 3 * len(fields) + 3 * len(fields) + 1 + len(fields)
+        n_pass  = n_def - n_fail
+        status  = f"{TICK} {n_pass}/{n_def}" if n_fail == 0 else f"{CROSS} {n_pass}/{n_def}"
+        print(f"  {identifier:<22}  {status}")
+        for msg in issues:
+            print(f"      {CROSS}  {msg}")
+
+    print(SEP)
+    n_pass = total_checks - total_fails
+    if total_fails == 0:
+        print(f"  Summary: {n_pass}/{total_checks} checks passed  —  all good!")
+    else:
+        print(f"  Summary: {n_pass}/{total_checks} passed,  {total_fails} FAILED")
+    print()
+
+
 def cmd_generate(args):
     def_path = Path(args.definition)
     if not def_path.exists():
@@ -737,10 +901,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  python3 tools/gen_chain.py tools/definitions/wa_dl.yaml\n"
-            "  python3 tools/gen_chain.py tools/definitions/wa_dl.yaml --dry-run\n"
-            "  python3 tools/gen_chain.py tools/definitions/wa_dl.yaml --force\n"
-            "  python3 tools/gen_chain.py --list\n"
+            "  ./gen_chain.py definitions/wa_dl.yaml           # generate new chain\n"
+            "  ./gen_chain.py definitions/wa_dl.yaml --dry-run # preview changes\n"
+            "  ./gen_chain.py definitions/wa_dl.yaml --force   # overwrite existing Lua\n"
+            "  ./gen_chain.py --list                           # show deployed engines\n"
+            "  ./gen_chain.py --audit                          # verify all definitions\n"
         ),
     )
     parser.add_argument(
@@ -750,6 +915,10 @@ def main():
     parser.add_argument(
         "--list", action="store_true",
         help="List all engines currently configured in Kapish_debug.cfg",
+    )
+    parser.add_argument(
+        "--audit", action="store_true",
+        help="Cross-check all YAML definitions against deployed Lua/CFG/XSL/test artifacts",
     )
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -763,12 +932,19 @@ def main():
         "--config-dir", metavar="PATH",
         help=f"Override the configurations/ directory (default: {CONFIG_DIR})",
     )
+    parser.add_argument(
+        "--defs-dir", metavar="PATH",
+        help=f"Override the definitions/ directory used by --audit (default: {TOOLS_DIR / 'definitions'})",
+    )
 
     args = parser.parse_args()
 
     config_dir = Path(args.config_dir) if args.config_dir else CONFIG_DIR
+    defs_dir   = Path(args.defs_dir)   if args.defs_dir   else TOOLS_DIR / "definitions"
 
-    if args.list:
+    if args.audit:
+        cmd_audit(config_dir, defs_dir)
+    elif args.list:
         cmd_list(config_dir)
     elif args.definition:
         cmd_generate(args)
