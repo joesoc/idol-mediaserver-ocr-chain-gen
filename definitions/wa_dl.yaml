@@ -121,7 +121,7 @@ fields:
       left:   0.0    # far left of card (name/logo side)
       top:    0.35
       width:  0.20   # covers left ~45% of card width
-      height: 0.11
+      height: 0.12
     ocr:
       languages: en
       word_reject_threshold: 40

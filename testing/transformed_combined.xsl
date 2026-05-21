@@ -126,6 +126,12 @@
                         <WA_DL_CONFIDENCE>
                             <xsl:value-of select="//record[trackname='OCR_WA_DL_Licence_Number.Result']/OCRResult/confidence"/>
                         </WA_DL_CONFIDENCE>
+                        <WA_DL_NAME>
+                            <xsl:for-each select="//record[trackname='OCR_WA_DL_Name.Result']/OCRResult">
+                                <xsl:if test="position() > 1"><xsl:text> </xsl:text></xsl:if>
+                                <xsl:value-of select="text"/>
+                            </xsl:for-each>
+                        </WA_DL_NAME>
                     </xsl:if>
 
                     <!-- Metadata -->
