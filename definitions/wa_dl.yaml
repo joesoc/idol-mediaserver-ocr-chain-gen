@@ -96,7 +96,18 @@ fields:
       character_types: digit
       word_reject_threshold: 60
       ocr_mode: document
-
+  - name: Name
+    description: "Cardholder's full name (lower half of card)"
+    roi:
+      left:   0.05
+      top:    0.5
+      width:  0.9
+      height: 0.4
+    ocr:
+      languages: en
+      word_reject_threshold: 40
+      ocr_mode: auto
+      process_text_elements: true
   # Add more fields as needed, e.g.:
   # - name: Date_Of_Birth
   #   description: "DOB in DD Mon YYYY format"

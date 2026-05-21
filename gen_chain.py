@@ -345,6 +345,32 @@ def patch_session(text: str, new_names: list, before: str = "CombineOCRResults")
     return result
 
 
+def patch_session_after(text: str, new_names: list, after: str) -> str:
+    """
+    Insert new_names immediately after `after` in the [Session] engine list and renumber.
+    Used when adding new fields to an existing chain.
+    """
+    def _replace(m):
+        existing = re.findall(r'Engine\d+\s*=\s*(\S+)', m.group())
+        if after not in existing:
+            return m.group()
+        idx = existing.index(after)
+        merged = existing[:idx + 1] + new_names + existing[idx + 1:]
+        lines = "\n".join(f"Engine{i:<2} = {n}" for i, n in enumerate(merged))
+        return "[Session]\n" + lines + "\n"
+
+    result = re.sub(
+        r'\[Session\]\s*\n(?:[ \t]*Engine\d+[ \t]*=[ \t]*\S+[ \t]*\n)+',
+        _replace,
+        text,
+    )
+    if result == text:
+        raise ValueError(
+            f"Session block not found or '{after}' not in engine list."
+        )
+    return result
+
+
 def insert_stanzas_before(text: str, stanzas: str, anchor: str = "CombineOCRResults") -> str:
     """Insert stanza block immediately before the [<anchor>] section."""
     marker = f"\n[{anchor}]"
@@ -389,33 +415,18 @@ def _ocr_block(ocr: dict) -> str:
     return "\n".join(parts)
 
 
-def build_stanzas(identifier: str, fields: list, id_low: str, debug: bool) -> str:
+def _field_stanzas(identifier: str, fields: list, id_low: str, debug: bool) -> str:
     """
-    Return the cfg stanza block for all engines in the chain.
-    debug=True adds Draw + Save engines; debug=False omits them.
+    Return the cfg stanza block for the per-field engines only
+    (DynamicRegion / Draw / Save / OCR).  Does NOT include Filter or Combine.
+    Used when adding new fields to an existing chain.
     """
     parts = []
-
-    parts.append(
-        f"[Filter_{identifier}]\n"
-        f"Type = filter\n"
-        f"Input = ObjectRecognition.Result\n"
-        f"LuaScript = filters/filter_{id_low}.lua\n"
-    )
-    parts.append(
-        f"[Combine_{identifier}]\n"
-        f"Type = combine\n"
-        f"Input0 = RotateTask.Output\n"
-        f"Input1 = Filter_{identifier}.Output\n"
-    )
-
     for f in fields:
         fname = f["name"]
         f_low = fname.lower()
         ocr   = f.get("ocr", {})
         stem  = f"{id_low}_{f_low}"
-        # Allow YAML to override the compute Lua script name (e.g. for hand-written scripts
-        # that predate gen_chain.py or use custom logic not expressible by the template).
         lua_script = f.get("lua_script", f"compute_dynamic_region_{id_low}_{f_low}.lua")
 
         parts.append(
@@ -424,7 +435,6 @@ def build_stanzas(identifier: str, fields: list, id_low: str, debug: bool) -> st
             f"Input = Combine_{identifier}.Output\n"
             f"LuaScript = {lua_script}\n"
         )
-
         if debug:
             parts.append(
                 f"[Draw_PreOCR_{identifier}_{fname}]\n"
@@ -449,13 +459,31 @@ def build_stanzas(identifier: str, fields: list, id_low: str, debug: bool) -> st
             f"Region = Input\n"
             f"{_ocr_block(ocr)}\n"
         )
-
     return "\n".join(parts)
 
 
-def session_engine_names(identifier: str, fields: list, debug: bool) -> list:
-    """Return the ordered engine names that go into [Session] for this chain."""
-    names = [f"Filter_{identifier}", f"Combine_{identifier}"]
+def build_stanzas(identifier: str, fields: list, id_low: str, debug: bool) -> str:
+    """
+    Return the cfg stanza block for all engines in the chain.
+    debug=True adds Draw + Save engines; debug=False omits them.
+    """
+    header = (
+        f"[Filter_{identifier}]\n"
+        f"Type = filter\n"
+        f"Input = ObjectRecognition.Result\n"
+        f"LuaScript = filters/filter_{id_low}.lua\n"
+        f"\n"
+        f"[Combine_{identifier}]\n"
+        f"Type = combine\n"
+        f"Input0 = RotateTask.Output\n"
+        f"Input1 = Filter_{identifier}.Output\n"
+    )
+    return header + "\n" + _field_stanzas(identifier, fields, id_low, debug)
+
+
+def _field_engine_names(identifier: str, fields: list, debug: bool) -> list:
+    """Return the per-field engine names (DynamicRegion/Draw/Save/OCR) without Filter/Combine."""
+    names = []
     for f in fields:
         fname = f["name"]
         names.append(f"DynamicRegion_{identifier}_{fname}")
@@ -464,6 +492,11 @@ def session_engine_names(identifier: str, fields: list, debug: bool) -> list:
             names.append(f"SavePreOCR_{identifier}_{fname}")
         names.append(f"OCR_{identifier}_{fname}")
     return names
+
+
+def session_engine_names(identifier: str, fields: list, debug: bool) -> list:
+    """Return the ordered engine names that go into [Session] for this chain."""
+    return [f"Filter_{identifier}", f"Combine_{identifier}"] + _field_engine_names(identifier, fields, debug)
 
 
 # ===========================================================================
@@ -512,34 +545,61 @@ class ChainBuilder:
             return
 
         text = cfg_path.read_text(encoding="utf-8")
-
-        # Guard against duplicates
-        if re.search(rf'Engine\d+\s*=\s*Filter_{re.escape(self.identifier)}\b', text):
-            print(f"  SKIP (already present)  {label}  →  Filter_{self.identifier} exists")
-            return
-
         identifier = self.identifier
         id_low     = self.id_low
         fields     = self.fields
+        existing   = set(get_session_engines(text))
 
-        try:
-            text = patch_session(text, session_engine_names(identifier, fields, debug))
-            text = insert_stanzas_before(text, build_stanzas(identifier, fields, id_low, debug))
-            ocr_results = [f"OCR_{identifier}_{f['name']}.Result" for f in fields]
-            text = add_combine_inputs(text, ocr_results)
-        except ValueError as exc:
-            print(f"  ERROR  {label}: {exc}")
-            return
+        # --- Case 1: brand-new chain ---
+        if f"Filter_{identifier}" not in existing:
+            try:
+                text = patch_session(text, session_engine_names(identifier, fields, debug))
+                text = insert_stanzas_before(text, build_stanzas(identifier, fields, id_low, debug))
+                text = add_combine_inputs(text, [f"OCR_{identifier}_{f['name']}.Result" for f in fields])
+            except ValueError as exc:
+                print(f"  ERROR  {label}: {exc}")
+                return
+            msg = "PATCHED (new chain)"
+
+        # --- Case 2: chain exists — add only missing fields ---
+        else:
+            new_fields = [f for f in fields
+                          if f"DynamicRegion_{identifier}_{f['name']}" not in existing]
+            if not new_fields:
+                print(f"  SKIP (all fields present)  {label}")
+                return
+
+            # Find the last engine that belongs to this identifier's chain
+            last_engine = None
+            for eng in get_session_engines(text):
+                if re.match(
+                    rf"(Filter|Combine|DynamicRegion|Draw_PreOCR|SavePreOCR|OCR)_{re.escape(identifier)}",
+                    eng,
+                ):
+                    last_engine = eng
+            if last_engine is None:
+                print(f"  ERROR  {label}: could not locate last engine of {identifier} chain")
+                return
+
+            try:
+                text = patch_session_after(text, _field_engine_names(identifier, new_fields, debug), last_engine)
+                text = insert_stanzas_before(text, _field_stanzas(identifier, new_fields, id_low, debug))
+                text = add_combine_inputs(text, [f"OCR_{identifier}_{f['name']}.Result" for f in new_fields])
+            except ValueError as exc:
+                print(f"  ERROR  {label}: {exc}")
+                return
+            names_str = ", ".join(f["name"] for f in new_fields)
+            msg = f"PATCHED (added: {names_str})"
 
         if self.dry_run:
-            print(f"  [DRY-RUN] PATCH   {label}")
-        else:
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup = cfg_path.with_suffix(f".{ts}.bak")
-            shutil.copy2(cfg_path, backup)
-            print(f"  BACKUP            {self._rel(backup)}")
-            cfg_path.write_text(text, encoding="utf-8")
-            print(f"  PATCHED           {label}")
+            print(f"  [DRY-RUN]         {label}")
+            return
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup = cfg_path.with_suffix(f".{ts}.bak")
+        shutil.copy2(cfg_path, backup)
+        print(f"  BACKUP            {self._rel(backup)}")
+        cfg_path.write_text(text, encoding="utf-8")
+        print(f"  {msg}  {label}")
 
     def _patch_xsl(self, xsl_path: Path, starting_pin: int):
         label = xsl_path.name
@@ -548,32 +608,65 @@ class ChainBuilder:
             return
 
         text = xsl_path.read_text(encoding="utf-8")
+        identifier = self.identifier
 
-        if f"'{self.identifier}'" in text:
-            print(f"  SKIP (already present)  {label}  →  {self.identifier} exists")
-            return
+        # --- Case 1: identifier not present yet — insert full <xsl:if> block ---
+        if f"'{identifier}'" not in text:
+            anchor = "<!-- Metadata -->"
+            idx = text.find(anchor)
+            if idx == -1:
+                print(f"  ERROR  {label}: anchor '<!-- Metadata -->' not found")
+                return
+            block = _xsl_if_block(identifier, self.fields, starting_pin)
+            new_text = text[:idx] + block + "\n" + text[idx:]
+            msg = "PATCHED (new block)"
 
-        anchor = "<!-- Metadata -->"
-        idx = text.find(anchor)
-        if idx == -1:
-            print(f"  ERROR  {label}: anchor '<!-- Metadata -->' not found")
-            return
+        # --- Case 2: identifier present — add missing fields to existing block ---
+        else:
+            new_fields = [f for f in self.fields
+                          if f"<{identifier}_{f['name'].upper()}>" not in text]
+            if not new_fields:
+                print(f"  SKIP (all fields present)  {label}")
+                return
 
-        block = _xsl_if_block(self.identifier, self.fields, starting_pin)
-        new_text = text[:idx] + block + "\n" + text[idx:]
+            # Find the </xsl:if> that closes this identifier's block
+            open_pos = text.find(f"= '{identifier}'")
+            if open_pos == -1:
+                print(f"  ERROR  {label}: <xsl:if> for '{identifier}' not found")
+                return
+            close_tag = "</xsl:if>"
+            close_pos = text.find(close_tag, open_pos)
+            if close_pos == -1:
+                print(f"  ERROR  {label}: closing </xsl:if> not found")
+                return
+
+            # Build new element lines for each missing field
+            insert_lines = []
+            for f in new_fields:
+                trackname = f"OCR_{identifier}_{f['name']}.Result"
+                xml_num   = f"{identifier}_{f['name'].upper()}"
+                insert_lines += [
+                    f"                        <{xml_num}>",
+                    f"                            <xsl:value-of select=\"//record[trackname='{trackname}']/OCRResult/text\"/>",
+                    f"                        </{xml_num}>",
+                ]
+            insert_text = "\n".join(insert_lines) + "\n"
+
+            # Insert before the line that contains </xsl:if> (preserving that line's indent)
+            line_start = text.rfind("\n", 0, close_pos)
+            new_text = text[:line_start + 1] + insert_text + text[line_start + 1:]
+            names_str = ", ".join(f["name"] for f in new_fields)
+            msg = f"PATCHED (added: {names_str})"
 
         if self.dry_run:
-            print(f"  [DRY-RUN] PATCH   {label}")
-            for f in self.fields:
-                pin = starting_pin + self.fields.index(f)
-                print(f"    {self.identifier}_{f['name'].upper()} @ inputPin={pin}")
-        else:
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup = xsl_path.with_suffix(f".{ts}.bak")
-            shutil.copy2(xsl_path, backup)
-            print(f"  BACKUP            {self._rel(backup)}")
-            xsl_path.write_text(new_text, encoding="utf-8")
-            print(f"  PATCHED           {label}")
+            print(f"  [DRY-RUN]         {label}")
+            return
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup = xsl_path.with_suffix(f".{ts}.bak")
+        shutil.copy2(xsl_path, backup)
+        print(f"  BACKUP            {self._rel(backup)}")
+        xsl_path.write_text(new_text, encoding="utf-8")
+        print(f"  {msg}  {label}")
 
     def _patch_unittest(self, test_path: Path):
         label = test_path.name
@@ -582,10 +675,12 @@ class ChainBuilder:
             return
 
         text = test_path.read_text(encoding="utf-8")
+        identifier = self.identifier
 
-        # Guard: check if any XML element for this identifier is already present
-        if f"'{self.identifier}_" in text:
-            print(f"  SKIP (already present)  {label}  →  {self.identifier} exists")
+        new_fields = [f for f in self.fields
+                      if f"'{identifier}_{f['name'].upper()}'" not in text]
+        if not new_fields:
+            print(f"  SKIP (all fields present)  {label}")
             return
 
         sentinel = "    # [GEN_CHAIN_INSERT]"
@@ -594,23 +689,24 @@ class ChainBuilder:
             return
 
         new_lines = []
-        for f in self.fields:
-            xml_num  = f"{self.identifier}_{f['name'].upper()}"
-            xml_conf = f"{self.identifier}_CONFIDENCE"
+        for f in new_fields:
+            xml_num  = f"{identifier}_{f['name'].upper()}"
+            xml_conf = f"{identifier}_CONFIDENCE"
             new_lines.append(f"    ('{xml_num}', '{xml_conf}'),")
         new_entry = "\n".join(new_lines) + "\n"
 
         if self.dry_run:
-            print(f"  [DRY-RUN] PATCH   {label}")
+            print(f"  [DRY-RUN]         {label}")
             for line in new_lines:
                 print(f"    {line.strip()}")
-        else:
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup = test_path.with_suffix(f".{ts}.bak")
-            shutil.copy2(test_path, backup)
-            print(f"  BACKUP            {self._rel(backup)}")
-            test_path.write_text(text.replace(sentinel, new_entry + sentinel), encoding="utf-8")
-            print(f"  PATCHED           {label}")
+            return
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup = test_path.with_suffix(f".{ts}.bak")
+        shutil.copy2(test_path, backup)
+        print(f"  BACKUP            {self._rel(backup)}")
+        test_path.write_text(text.replace(sentinel, new_entry + sentinel), encoding="utf-8")
+        names_str = ", ".join(f["name"] for f in new_fields)
+        print(f"  PATCHED (added: {names_str})  {label}")
 
     # -------------------------------------------------------------------------
 
