@@ -1,3 +1,4 @@
+
 # ============================================================
 #  gen_chain.py — YAML Definition Template
 #  Copy this file, rename it, fill in your values.
@@ -19,20 +20,34 @@ description: "Western Australia Driver's Licence"
 # card_estimation
 #   Describes how the ObjectRecognition bounding box relates to the full card.
 #
-#   Two common cases:
+#   Three common cases:
 #
 #   A) Model detects the FULL card (e.g. QLD_DL):
 #      Set all factors to their identity values — the bounding box IS the card.
-#        width_factor:       1.0
-#        height_factor:      1.0
 #        left_offset_factor: 0.0
 #        top_offset_factor:  0.0
+#        width_factor:       1.0
+#        height_factor:      1.0
 #
-#   B) Model detects only a BANNER STRIP across the top of the card
-#      (e.g. TAS_DL, VIC_DL, WA_DL — "large aspect ratio" warning in engine.log):
-#      The banner is ~N% of the card height; set height_factor = 1/N.
-#      If the banner spans the full card width, width_factor = 1.0.
-#      If the banner is narrower, increase width_factor accordingly.
+#   B) Model detects a BANNER STRIP along the TOP of the card
+#      (e.g. TAS_DL, VIC_DL — "large aspect ratio" warning in engine.log):
+#      The banner spans the full card width but is only ~N% of the card height.
+#        left_offset_factor: 0.0
+#        top_offset_factor:  0.0
+#        width_factor:       1.0
+#        height_factor:      1.0 / N   (e.g. 6.25 if banner = 16% of height)
+#
+#   C) Model detects a STRIP IN THE CENTRE of the card (e.g. WA_DL):
+#      The strip is narrower than the full card on both sides.
+#      Card layout:  [left content | detected strip (lw) | right content]
+#      Measure how far the card extends past the strip on each side, as a
+#      fraction of lw.  e.g. if card extends 0.5*lw left and 1.5*lw total:
+#        left_offset_factor: -0.5   # card_left = min_x - 0.5*lw
+#        width_factor:       1.5    # card_width = 1.5 * lw
+#      All ROI left/width fractions are then relative to this wider card.
+#      To convert a known pixel position px:
+#        roi.left  = (px - card_left) / card_width
+#        roi.width = pixel_width / card_width
 #
 #   Formula used in the generated Lua:
 #     card_left   = min_x + lw * left_offset_factor
@@ -40,16 +55,20 @@ description: "Western Australia Driver's Licence"
 #     card_width  = lw   * width_factor
 #     card_height = lh   * height_factor
 #
-#   How to measure banner height fraction:
+#   How to measure fractions:
 #     Open the source card image in an image editor.
-#     Banner height in pixels / total card height in pixels = fraction.
-#     height_factor = 1.0 / fraction
+#     Measure pixel distances relative to the detected bounding box edges.
+#     Divide by the detected box width (lw) or height (lh) to get factors.
 # ---------------------------------------------------------------------------
 card_estimation:
-  left_offset_factor: 0.3    # shift left edge by lw * this  (negative = expand left)
-  top_offset_factor:  0.0    # shift top  edge by lh * this
-  width_factor:       1.0    # card width  = detected width  * this
-  height_factor:      6.25   # card height = detected height * this  (banner ≈ 16% of card)
+  # Detected strip is the CENTRE of the card.  Card layout:
+  #   [name/logo area | detected strip (lw) | licence number area]
+  # card_left  = min_x - 0.5*lw  (half strip-width left of detected box)
+  # card_width = 2.0 * lw        (card is ~2x the strip width)
+  left_offset_factor: -0.5   # card_left = min_x - 0.5 * lw
+  top_offset_factor:  0.0
+  width_factor:       2.0    # card_width = detected_width * 2
+  height_factor:      6.25   # banner ≈ 16% of card height
 
 
 # ---------------------------------------------------------------------------
@@ -87,9 +106,9 @@ fields:
   - name: Licence_Number
     description: "7-digit licence number (top-right corner)"
     roi:
-      left:   0.67
+      left:   0.74   # (original 0.97*lw + 0.5*lw offset) / 2*lw
       top:    0.22
-      width:  0.34
+      width:  0.17   # 0.34*lw / 2*lw
       height: 0.15
     ocr:
       languages: en
@@ -99,10 +118,10 @@ fields:
   - name: Name
     description: "Cardholder's full name (lower half of card)"
     roi:
-      left:   0.05
-      top:    0.5
-      width:  0.9
-      height: 0.4
+      left:   0.0    # far left of card (name/logo side)
+      top:    0.35
+      width:  0.20   # covers left ~45% of card width
+      height: 0.11
     ocr:
       languages: en
       word_reject_threshold: 40
