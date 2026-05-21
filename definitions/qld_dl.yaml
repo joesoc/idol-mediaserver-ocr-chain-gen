@@ -1,0 +1,58 @@
+# ============================================================
+#  QLD Driver's Licence — gen_chain.py definition
+# ============================================================
+# NOTE: This chain was hand-written before gen_chain.py existed.
+# Running gen_chain.py with this file will SKIP cfg/XSL/test patching
+# because Filter_QLD_DL already exists.  The YAML serves as the
+# canonical record of the ROI fractions.
+#
+# IMPORTANT — Custom Lua (not auto-generatable):
+#   The QLD model does NOT detect the full card.  ObjectRecognition finds one
+#   of two sub-card features:
+#
+#   Feature A — "Queensland" text banner (top-left; Y centroid < 150 px):
+#     card_width  = feat_w / 0.35  |  card_height = card_width / 1.585
+#     card_left   = min_x          |  card_top    = min_y
+#
+#   Feature B — QLD government logo (bottom-right; Y centroid >= 150 px):
+#     card_width  = feat_w / 0.28  |  card_height = feat_h / 0.17
+#     card_left   = (max_x + card_width * 0.03) - card_width
+#     card_top    = (max_y + card_height * 0.09) - card_height
+#
+#   After inferring full-card dimensions, the licence-number ROI is
+#   placed at x: 65–98 %, y: 3–14 % of the inferred card.
+#
+#   This two-branch geometry cannot be expressed by the standard
+#   card_estimation formula; card_estimation fields below are placeholders.
+# ============================================================
+
+identifier: QLD_DL
+description: "Queensland Driver's Licence"
+
+# Placeholder values only — card geometry is computed dynamically in Lua.
+card_estimation:
+  left_offset_factor:  0.0
+  top_offset_factor:   0.0
+  width_factor:        1.0
+  height_factor:       1.0
+
+fields:
+  - name: DL_Number
+    description: "QLD licence number (top-right of card)"
+    # Override: use hand-written two-branch geometry Lua.
+    lua_script: compute_dynamic_region_qld.lua
+    roi:
+      left:   0.65
+      top:    0.03
+      width:  0.33
+      height: 0.11
+    ocr:
+      languages: en
+      character_types: digit
+      word_reject_threshold: 60
+      ocr_mode: document
+
+draw:
+  roi_color:      [  0, 200,  80]   # green
+  boundary_color: [  0,   0, 160]   # dark blue
+  label_fallback: QLD

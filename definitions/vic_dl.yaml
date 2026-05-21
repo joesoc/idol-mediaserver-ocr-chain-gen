@@ -1,0 +1,44 @@
+# ============================================================
+#  VIC Driver's Licence — gen_chain.py definition
+# ============================================================
+# NOTE: This chain was hand-written before gen_chain.py existed.
+# Running gen_chain.py with this file will SKIP cfg/XSL/test patching
+# because Filter_VIC_DL already exists.  The YAML serves as the
+# canonical record of the card geometry and ROI fractions.
+# ============================================================
+
+identifier: VIC_DL
+description: "Victoria Driver's Licence"
+
+# ---------------------------------------------------------------------------
+# card_estimation
+#   The VIC_DL model detects a full-width horizontal banner at the top of the
+#   card (~12.8% of card height, full width).  The card_left = min_x (no
+#   horizontal offset needed).
+#   Measured from VIC-DL.png.
+# ---------------------------------------------------------------------------
+card_estimation:
+  left_offset_factor:  0.0    # no offset: card_left   = min_x
+  top_offset_factor:   0.0    # no offset: card_top    = min_y
+  width_factor:        1.0    # card_width  = lw * 1.0  (banner = full card width)
+  height_factor:       7.8    # card_height = lh * 7.8  (banner ≈ 12.8% of card height)
+
+fields:
+  - name: DL_Number
+    description: "VIC licence number (right-centre of card)"
+    lua_script: compute_dynamic_region_vic.lua
+    roi:
+      left:   1.1    # NOTE: intentionally > 1.0 — empirically tuned to align to the
+      top:    0.16   # right portion of the card where the VIC licence number appears.
+      width:  0.38   # With left_offset=0 and width_factor=1, card_left=min_x and
+      height: 0.13   # card_width=lw, so left=1.1 places the ROI just right of centre.
+    ocr:
+      languages: en
+      character_types: digit
+      word_reject_threshold: 60
+      ocr_mode: document
+
+draw:
+  roi_color:      [160,   0, 220]   # purple
+  boundary_color: [  0,   0, 160]   # dark blue
+  label_fallback: VIC

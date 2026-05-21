@@ -46,7 +46,7 @@ description: "Western Australia Driver's Licence"
 #     height_factor = 1.0 / fraction
 # ---------------------------------------------------------------------------
 card_estimation:
-  left_offset_factor: 0.0    # shift left edge by lw * this  (negative = expand left)
+  left_offset_factor: 0.3    # shift left edge by lw * this  (negative = expand left)
   top_offset_factor:  0.0    # shift top  edge by lh * this
   width_factor:       1.0    # card width  = detected width  * this
   height_factor:      6.25   # card height = detected height * this  (banner ≈ 16% of card)

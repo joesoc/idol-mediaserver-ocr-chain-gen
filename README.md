@@ -17,6 +17,8 @@ For each YAML definition the tool produces:
 | `lua/draw/draw_<id>.lua` | Debug overlay: draws the region box + detection boundary on the image |
 | Patch `Kapish_debug.cfg` | Adds Filter → Combine → DynRegion → Draw → Save → OCR engine chain |
 | Patch `Kapish.cfg` | Adds Filter → Combine → DynRegion → OCR engine chain (no debug draw) |
+| Patch `transformed_combined.xsl` | Adds `<xsl:if>` block to map the new OCR result to a named XML element |
+| Patch `unittestforOCRProdV2.py` | Appends the new XML element names to `_DOC_FIELDS` so the test reads them |
 
 Both cfg files are updated atomically: Session engine numbers are renumbered
 and a new `InputN` line is added to `CombineOCRResults`.
@@ -327,3 +329,109 @@ configurations/Kapish.cfg        (patched)
 
 Follow the same workflow: copy `template.yaml`, fill in values, run the tool,
 tune the ROI fractions from the debug PNG.
+
+---
+
+## Testing your chain
+
+Two files work together to verify that a chain is extracting the correct values
+from real document images.  Reference copies of both are kept in
+`tools/testing/` so the tooling is self-contained alongside the YAML
+definitions.
+
+| File | Live location | Reference copy |
+|---|---|---|
+| `unittestforOCRProdV2.py` | `code/unittestforOCRProdV2.py` | `tools/testing/unittestforOCRProdV2.py` |
+| `transformed_combined.xsl` | `configurations/xsl/transformed_combined.xsl` | `tools/testing/transformed_combined.xsl` |
+| `test_truth.xml` | `code/test_truth.xml` | `tools/testing/test_truth.xml` |
+
+> The live files are what MediaServer and the test runner actually use.
+> The copies in `tools/testing/` serve as a versioned snapshot that travels
+> with the chain generator in version control.
+
+### How the test pipeline works
+
+```
+Image
+  └─► MediaServer (Kapish.cfg)
+        ├─► <stem>_combined_pre.xml     (raw MediaServer XML)
+        └─► <stem>_combined.xml         (XSLT-transformed, named fields)
+
+transformed_combined.xsl
+  Converts each OCR result at inputPin=N to a named element:
+    <WA_DL_LICENCE_NUMBER>, <VIC_DL_NUMBER>, etc.
+
+unittestforOCRProdV2.py
+  Reads <stem>_combined.xml, looks up each element in _DOC_FIELDS,
+  compares against test_truth.xml, and writes an HTML report.
+```
+
+The `inputPin` in the XSL corresponds to the position of the OCR engine in
+the `[CombineOCRResults]` input list (`Input0` = ObjectRecognition, `Input1`
+onwards = OCR engines in session order).
+
+### What gen_chain.py patches automatically
+
+When a new chain is added, the tool:
+
+1. **XSL** — inserts a `<xsl:if>` block before `<!-- Metadata -->` in
+   `transformed_combined.xsl`, using the correct `inputPin` value derived from
+   the current `[CombineOCRResults]` state.
+2. **Unit test** — appends a `(number_element, confidence_element)` tuple to
+   the `_DOC_FIELDS` list in `unittestforOCRProdV2.py`, just before the
+   `# [GEN_CHAIN_INSERT]` sentinel comment.
+
+Both files are backed up with a `.<YYYYMMDD_HHMMSS>.bak` timestamp before
+being modified (same as the cfg backup behaviour).
+
+### XML element naming convention
+
+`gen_chain.py` produces deterministic XML element names:
+
+| Element | Format | Example |
+|---|---|---|
+| Number | `{IDENTIFIER}_{FIELD_NAME_UPPER}` | `WA_DL_LICENCE_NUMBER` |
+| Confidence | `{IDENTIFIER}_CONFIDENCE` | `WA_DL_CONFIDENCE` |
+
+> Legacy hand-written entries (ACT, NSW, QLD, TAS) use a shorter confidence
+> tag (`ACT_CONFIDENCE` instead of `ACT_DL_CONFIDENCE`).  New entries added
+> by the tool use the full identifier form.
+
+### Running the test
+
+```bash
+cd /home/ubuntu/projects/mediaserver/code
+sudo python3 unittestforOCRProdV2.py
+```
+
+HTML reports are saved to `code/reports/`.  The XML output comparison report
+(`report_xml_output.html`) is the most useful — it shows per-image pass/fail
+against `test_truth.xml`.
+
+### Adding expected values for a new document type
+
+Add an entry to `code/test_truth.xml` before running the test:
+
+```xml
+<file>
+  <name>WA-DL.png</name>
+  <passport_number>2049113</passport_number>
+</file>
+```
+
+The `<passport_number>` tag holds the expected number for any document type
+(the name is a legacy label).
+
+### Keeping the reference copies in sync
+
+After running `gen_chain.py` (which modifies the live files), refresh the
+copies in `tools/testing/`:
+
+```bash
+cp code/unittestforOCRProdV2.py tools/testing/
+cp code/test_truth.xml tools/testing/
+cp mediaserver/MediaServer_26.2.0_LINUX_X86_64/configurations/xsl/transformed_combined.xsl tools/testing/
+```
+
+Then commit both alongside the YAML definition so the repo always reflects the
+current state of the pipeline.

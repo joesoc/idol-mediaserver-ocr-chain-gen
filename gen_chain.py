@@ -33,10 +33,84 @@ except ImportError:
 
 TOOLS_DIR  = Path(__file__).resolve().parent
 PROJ_DIR   = TOOLS_DIR.parent
-CONFIG_DIR = PROJ_DIR / "mediaserver" / "MediaServer_26.2.0_LINUX_X86_64" / "configurations"
-LUA_DIR    = CONFIG_DIR / "lua"
-DEBUG_CFG  = CONFIG_DIR / "Kapish_debug.cfg"
-PLAIN_CFG  = CONFIG_DIR / "Kapish.cfg"
+CONFIG_DIR    = PROJ_DIR / "mediaserver" / "MediaServer_26.2.0_LINUX_X86_64" / "configurations"
+LUA_DIR       = CONFIG_DIR / "lua"
+DEBUG_CFG     = CONFIG_DIR / "Kapish_debug.cfg"
+PLAIN_CFG     = CONFIG_DIR / "Kapish.cfg"
+XSL_PATH      = CONFIG_DIR / "xsl" / "transformed_combined.xsl"
+UNITTEST_PATH = PROJ_DIR / "code" / "unittestforOCRProdV2.py"
+
+
+# ===========================================================================
+#  XSL / unit-test helpers
+# ===========================================================================
+
+def _next_combine_input(cfg_path: Path) -> int:
+    """Return what the NEXT InputN number will be in [CombineOCRResults]."""
+    if not cfg_path.exists():
+        return 5  # safe fallback
+    text = cfg_path.read_text(encoding="utf-8")
+    combine_pos = text.find("\n[CombineOCRResults]")
+    if combine_pos == -1:
+        return 5
+    luascript_pos = text.find("LuaScript", combine_pos)
+    if luascript_pos == -1:
+        return 5
+    block = text[combine_pos:luascript_pos]
+    existing = [int(x) for x in re.findall(r"Input(\d+)", block)]
+    return (max(existing) + 1) if existing else 0
+
+
+def _find_ocr_input_pin(cfg_path: Path, identifier: str, fields: list):
+    """Return the inputPin of the first OCR engine for this chain, or None."""
+    if not cfg_path.exists():
+        return None
+    text = cfg_path.read_text(encoding="utf-8")
+    combine_pos = text.find("\n[CombineOCRResults]")
+    if combine_pos == -1:
+        return None
+    luascript_pos = text.find("LuaScript", combine_pos)
+    if luascript_pos == -1:
+        return None
+    block = text[combine_pos:luascript_pos]
+    first_field = fields[0]["name"]
+    engine = f"OCR_{identifier}_{first_field}.Result"
+    m = re.search(r"Input(\d+)\s*=\s*" + re.escape(engine), block)
+    return int(m.group(1)) if m else None
+
+
+def _xsl_if_block(identifier: str, fields: list, starting_pin: int) -> str:
+    """Build the <xsl:if> block for the XSL template.
+
+    Uses (//ObjectRecognitionResult)[1] to restrict the condition to the
+    primary (highest-confidence) detection only, avoiding false matches when
+    ObjectRecognition returns multiple results for the same image.
+
+    Uses trackname-based record selection instead of inputPin, which shifts
+    unpredictably when ObjectRecognition returns more than one result.
+    """
+    lines = [
+        f"                    <!-- {identifier} -->",
+        f"                    <xsl:if test=\"(//ObjectRecognitionResult)[1]/identity/identifier = '{identifier}'\">",
+    ]
+    for i, f in enumerate(fields):
+        engine_trackname = f"OCR_{identifier}_{f['name']}.Result"
+        xml_num  = f"{identifier}_{f['name'].upper()}"
+        xml_conf = f"{identifier}_CONFIDENCE"
+        lines += [
+            f"                        <{xml_num}>",
+            f"                            <xsl:value-of select=\"//record[trackname='{engine_trackname}']/OCRResult/text\"/>",
+            f"                        </{xml_num}>",
+        ]
+        if i == 0:  # emit confidence once (first field)
+            lines += [
+                f"                        <{xml_conf}>",
+                f"                            <xsl:value-of select=\"//record[trackname='{engine_trackname}']/OCRResult/confidence\"/>",
+                f"                        </{xml_conf}>",
+            ]
+    lines.append("                    </xsl:if>")
+    lines.append("")
+    return "\n".join(lines)
 
 
 # ===========================================================================
@@ -326,12 +400,15 @@ def build_stanzas(identifier: str, fields: list, id_low: str, debug: bool) -> st
         f_low = fname.lower()
         ocr   = f.get("ocr", {})
         stem  = f"{id_low}_{f_low}"
+        # Allow YAML to override the compute Lua script name (e.g. for hand-written scripts
+        # that predate gen_chain.py or use custom logic not expressible by the template).
+        lua_script = f.get("lua_script", f"compute_dynamic_region_{id_low}_{f_low}.lua")
 
         parts.append(
             f"[DynamicRegion_{identifier}_{fname}]\n"
             f"Type = setrectangle\n"
             f"Input = Combine_{identifier}.Output\n"
-            f"LuaScript = compute_dynamic_region_{id_low}_{f_low}.lua\n"
+            f"LuaScript = {lua_script}\n"
         )
 
         if debug:
@@ -450,6 +527,77 @@ class ChainBuilder:
             cfg_path.write_text(text, encoding="utf-8")
             print(f"  PATCHED           {label}")
 
+    def _patch_xsl(self, xsl_path: Path, starting_pin: int):
+        label = xsl_path.name
+        if not xsl_path.exists():
+            print(f"  SKIP (not found)  {label}")
+            return
+
+        text = xsl_path.read_text(encoding="utf-8")
+
+        if f"'{self.identifier}'" in text:
+            print(f"  SKIP (already present)  {label}  →  {self.identifier} exists")
+            return
+
+        anchor = "<!-- Metadata -->"
+        idx = text.find(anchor)
+        if idx == -1:
+            print(f"  ERROR  {label}: anchor '<!-- Metadata -->' not found")
+            return
+
+        block = _xsl_if_block(self.identifier, self.fields, starting_pin)
+        new_text = text[:idx] + block + "\n" + text[idx:]
+
+        if self.dry_run:
+            print(f"  [DRY-RUN] PATCH   {label}")
+            for f in self.fields:
+                pin = starting_pin + self.fields.index(f)
+                print(f"    {self.identifier}_{f['name'].upper()} @ inputPin={pin}")
+        else:
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup = xsl_path.with_suffix(f".{ts}.bak")
+            shutil.copy2(xsl_path, backup)
+            print(f"  BACKUP            {self._rel(backup)}")
+            xsl_path.write_text(new_text, encoding="utf-8")
+            print(f"  PATCHED           {label}")
+
+    def _patch_unittest(self, test_path: Path):
+        label = test_path.name
+        if not test_path.exists():
+            print(f"  SKIP (not found)  {label}")
+            return
+
+        text = test_path.read_text(encoding="utf-8")
+
+        # Guard: check if any XML element for this identifier is already present
+        if f"'{self.identifier}_" in text:
+            print(f"  SKIP (already present)  {label}  →  {self.identifier} exists")
+            return
+
+        sentinel = "    # [GEN_CHAIN_INSERT]"
+        if sentinel not in text:
+            print(f"  ERROR  {label}: sentinel comment '# [GEN_CHAIN_INSERT]' not found in _DOC_FIELDS")
+            return
+
+        new_lines = []
+        for f in self.fields:
+            xml_num  = f"{self.identifier}_{f['name'].upper()}"
+            xml_conf = f"{self.identifier}_CONFIDENCE"
+            new_lines.append(f"    ('{xml_num}', '{xml_conf}'),")
+        new_entry = "\n".join(new_lines) + "\n"
+
+        if self.dry_run:
+            print(f"  [DRY-RUN] PATCH   {label}")
+            for line in new_lines:
+                print(f"    {line.strip()}")
+        else:
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup = test_path.with_suffix(f".{ts}.bak")
+            shutil.copy2(test_path, backup)
+            print(f"  BACKUP            {self._rel(backup)}")
+            test_path.write_text(text.replace(sentinel, new_entry + sentinel), encoding="utf-8")
+            print(f"  PATCHED           {label}")
+
     # -------------------------------------------------------------------------
 
     def run(self):
@@ -470,19 +618,38 @@ class ChainBuilder:
             lua_filter(identifier),
         )
         for f in fields:
-            self._write_lua(
-                self.lua_dir / f"compute_dynamic_region_{id_low}_{f['name'].lower()}.lua",
-                lua_compute(identifier, f, self.card),
-            )
+            if "lua_script" in f:
+                # Hand-written / custom script — skip generation, just note the override.
+                print(f"  SKIP (lua_script override)  {f['lua_script']}")
+            else:
+                self._write_lua(
+                    self.lua_dir / f"compute_dynamic_region_{id_low}_{f['name'].lower()}.lua",
+                    lua_compute(identifier, f, self.card),
+                )
         self._write_lua(
             self.lua_dir / "draw" / f"draw_{id_low}.lua",
             lua_draw(identifier, self.draw_cfg),
         )
 
+        # -- Determine inputPin before patching (pin changes once CFG is patched) -
+        plain_cfg = self.config_dir / "Kapish.cfg"
+        starting_pin = _find_ocr_input_pin(plain_cfg, identifier, fields)
+        if starting_pin is None:
+            starting_pin = _next_combine_input(plain_cfg)
+
         # -- CFG files ---------------------------------------------------------
         print("\nCFG files:")
         self._patch_cfg(self.config_dir / "Kapish_debug.cfg", debug=True)
         self._patch_cfg(self.config_dir / "Kapish.cfg",       debug=False)
+
+        # -- XSL file ----------------------------------------------------------
+        print("\nXSL file:")
+        xsl_path = self.config_dir / "xsl" / "transformed_combined.xsl"
+        self._patch_xsl(xsl_path, starting_pin)
+
+        # -- Unit test ---------------------------------------------------------
+        print("\nUnit test:")
+        self._patch_unittest(UNITTEST_PATH)
 
         # -- Summary -----------------------------------------------------------
         print()

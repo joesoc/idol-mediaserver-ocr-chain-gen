@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<files>
+  <file>
+    <name>ACT-DL.png</name>
+    <passport_number>0148103</passport_number>
+  </file>
+  <file>
+    <name>NSW-DL-Test.png</name>
+    <passport_number>11214255</passport_number>
+  </file>
+  <file>
+    <name>NSW-DL.png</name>
+    <passport_number>99473476</passport_number>
+  </file>
+  <file>
+    <name>QLD-DL.png</name>
+    <passport_number>082835927</passport_number>
+  </file>
+  <file>
+    <name>Sample Driver Licence - NSW (Front) 2.jpg</name>
+    <passport_number>11208313</passport_number>
+  </file>
+  <file>
+    <name>TAS-DL.png</name>
+    <passport_number>5548604</passport_number>
+  </file>
+  <file>
+    <name>VIC-DL-Front.jpg</name>
+    <passport_number>987654321</passport_number>
+  </file>
+  <file>
+    <name>WA-DL.png</name>
+    <passport_number>2049113</passport_number>
+  </file>
+</files>

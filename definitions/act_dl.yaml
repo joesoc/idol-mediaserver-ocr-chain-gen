@@ -1,0 +1,49 @@
+# ============================================================
+#  ACT Driver's Licence — gen_chain.py definition
+# ============================================================
+# NOTE: This chain was hand-written before gen_chain.py existed.
+# Running gen_chain.py with this file will SKIP cfg/XSL/test patching
+# because Filter_ACT_DL already exists.  The YAML serves as the
+# canonical record of the card geometry and ROI fractions.
+#
+# The hand-written Lua (compute_dynamic_region_act.lua) includes a
+# per-second deduplication guard (_G.roi_generated) that suppresses
+# duplicate ROIs when ObjectRecognition returns multiple records.
+# Do NOT overwrite it with --force.
+# ============================================================
+
+identifier: ACT_DL
+description: "Australian Capital Territory Driver's Licence"
+
+# ---------------------------------------------------------------------------
+# card_estimation
+#   The ACT_DL model detects a horizontal banner across the top of the card
+#   that is ~15% of the card height and slightly narrower than the full width.
+#   Measured from ACT-DL.png.
+# ---------------------------------------------------------------------------
+card_estimation:
+  left_offset_factor: -0.08   # expand left:  card_left  = min_x - lw * 0.08
+  top_offset_factor:  -0.15   # expand top:   card_top   = min_y - lh * 0.15
+  width_factor:        1.35   # card_width  = lw * 1.35
+  height_factor:       6.8    # card_height = lh * 6.8  (banner ≈ 14.7% of card)
+
+fields:
+  - name: DL_Number
+    description: "7-digit ACT licence number (mid-left of card)"
+    # Override: use hand-written Lua instead of auto-generated template.
+    lua_script: compute_dynamic_region_act.lua
+    roi:
+      left:   0.18
+      top:    0.44
+      width:  0.18
+      height: 0.07
+    ocr:
+      languages: en
+      character_types: digit
+      word_reject_threshold: 60
+      ocr_mode: document
+
+draw:
+  roi_color:      [255, 140,   0]   # orange
+  boundary_color: [  0,   0, 160]   # dark blue
+  label_fallback: ACT

@@ -1,0 +1,43 @@
+# ============================================================
+#  TAS Driver's Licence — gen_chain.py definition
+# ============================================================
+# NOTE: This chain was hand-written before gen_chain.py existed.
+# Running gen_chain.py with this file will SKIP cfg/XSL/test patching
+# because Filter_TAS_DL already exists.  The YAML serves as the
+# canonical record of the card geometry and ROI fractions.
+# ============================================================
+
+identifier: TAS_DL
+description: "Tasmania Driver's Licence"
+
+# ---------------------------------------------------------------------------
+# card_estimation
+#   The TAS_DL model detects a narrow vertical stripe on the left side of the
+#   card (approx 45% of card height and 9.6% of card width).
+#   Measured from TAS-DL.png.
+# ---------------------------------------------------------------------------
+card_estimation:
+  left_offset_factor: -0.185  # expand left:  card_left  = min_x - lw * 0.185
+  top_offset_factor:   0.0    # no top offset: card_top  = min_y
+  width_factor:        2.2    # card_width  = lw * 2.2   (stripe ≈ 45% of card width)
+  height_factor:      10.35   # card_height = lh * 10.35 (stripe ≈ 9.6% of card height)
+
+fields:
+  - name: DL_Number
+    description: "TAS licence number (mid-right of card)"
+    lua_script: compute_dynamic_region_tas.lua
+    roi:
+      left:   0.37
+      top:    0.45
+      width:  0.23
+      height: 0.12
+    ocr:
+      languages: en
+      character_types: digit
+      word_reject_threshold: 60
+      ocr_mode: document
+
+draw:
+  roi_color:      [  0, 200, 220]   # cyan
+  boundary_color: [  0,   0, 160]   # dark blue
+  label_fallback: TAS
